@@ -95,3 +95,11 @@ def compare_spline_methods(x_points, y_points, lam=1.0, s=50, num_eval_points=50
         'smoothing': smoothing_model
     }
     return models
+
+
+# --- Demo Execution ---
+# Unhashtag to run
+# if 'count_array' in globals() and 'occupancy_count_array' in globals():
+#    fitted_models = compare_spline_methods(count_array, occupancy_count_array, lam=1.0)
+# else:
+#    print("Demo skipped: 'count_array' or 'occupancy_count_array' variables are not populated.")
