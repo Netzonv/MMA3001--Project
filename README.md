@@ -27,7 +27,3 @@ This output can be used to judge if a space is utilised well, underutilised or o
 Invalid Inputs
 If sensor ID or floorspace ID do not equal the correct value or if there is a timestamp missing, then the row is removed from the dataset. If there is a missing value in headcount column, take the average between the top and bottom rows. 
 
-## Finding Trends and Patterns
-We now have a dataset that we can find trends and patterns through. We extract the timestamp and headcount columns and turn them into two matrices such that both can be graphed against each other. Then, use a smoothing spline to approximate the dataset.
-
-As seen in the outputs, a smoothing spline does a good job at finding a general trend throughout the week. However, it is limited in that it only takes one week of data to find a trend through. It would be more precise and general if more weeks are used as data. This would mean taking multiple weeks and average out the number of occupants at every hour.
