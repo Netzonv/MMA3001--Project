@@ -1,106 +1,103 @@
-# Trim and filter for occupancy data for Building 60 - G20
-
 import pandas as pd
+import numpy as np
+import os
 
-# Trim number of rows from 9 million to 1.5 million for smaller file size and faster calculation
-input_file = '/content/5occupancySensor_MayToDec2024_9MRows.csv'
-output_file = '/content/5occupancySensor_MayToDec2024_1.5MRows.csv'
-target_rows = 1500000
-chunk_size = 100000
+def get_hourly_average_for_room(input_csv, output_csv, target_floor_space, chunk_size=250000):
+    """
+    Processes a large occupancy dataset chunk-by-chunk, filters for a target room,
+    calculates the hourly average occupancy count per calendar date, fills in any
+    missing hours in the timeline with 0s, and saves the result to a CSV.
 
-print(f"Truncating dataset to the first {target_rows} rows...")
+    Parameters
+    ------------
+    input_csv : file pathway
+        the path to the raw input dataset for occupancy data (with 9 million rows)
 
-# Initialize variable to track total rows written
-rows_written = 0
-header_written = False
-
-for chunk in pd.read_csv(input_file, chunksize=chunk_size, on_bad_lines='skip'):
-    # Determine how many rows from the current chunk to write
-    remaining_rows = target_rows - rows_written
-    if remaining_rows <= 0:
-        break
-        
-    if len(chunk) > remaining_rows:
-        chunk = chunk.iloc[:remaining_rows]
-        
-    # Save to file
-    chunk.to_csv(output_file, mode='a', index=False, header=not header_written)
-    header_written = True
-    rows_written += len(chunk)
-    print(f"Progress: {rows_written} / {target_rows} rows written...")
-
-# Define explicit, clean column names
-columns = [
-    'sensor_id',
-    'floor_space_id',
-    'current_status',
-    'count',
-    'timestamp_record',
-    'timestamp_event',
-    'occupancy_label'
-]
-
-# Load the truncated dataset
-print("Loading dataset...")
-occ_df = pd.read_csv(
-    '/content/5occupancySensor_MayToDec2024_1.5MRows.csv',
-    names=columns,
-    header=0
-)
-
-# Convert timestamp to datetime
-occ_df['timestamp_event'] = pd.to_datetime(occ_df['timestamp_event'], errors='coerce')
-
-# Extract temporal features
-occ_df['day_of_week'] = occ_df['timestamp_event'].dt.day_name()
-occ_df['day_of_week_num'] = occ_df['timestamp_event'].dt.dayofweek
-occ_df['hour'] = occ_df['timestamp_event'].dt.hour
-occ_df['is_weekend'] = occ_df['day_of_week_num'].isin([5, 6]).astype(int)
-
-# Filter for Building 60 G20 floor space ID in the 2nd column
-target_floor_space = 'cca1ac3e-f81f-4ebb-aa2b-8b0bf3e9e53b'
-filtered_df = occ_df[occ_df['floor_space_id'] == target_floor_space]
-
-print(f"\n=== Filtered Results for floor_space_id: {target_floor_space} ===")
-print(f"Total records found: {len(filtered_df)}")
-
-# Print trimmed dataset, otherwise record invalid result
-if len(filtered_df) > 0:
-    display(filtered_df[['sensor_id', 'floor_space_id', 'timestamp_event', 'day_of_week', 'hour', 'occupancy_label']].head(10))
+    output_csv : file pathway
+        the output path to the filtered .csv file for a specified room
     
-    print("\n=== Occupancy Label Distribution for this space ===")
-    display(filtered_df['occupancy_label'].value_counts())
-else:
-    print("No records found matching this floor space ID in the first 1.5M rows.")
+    target_floor_space : string
+        the floorspace id for a specific room to search for in the input database
 
-#Filter for the first 2 weeks
+    chunk_size : integer
+        maximum number of rows processed in each block, utilised to reduce memory usuage; defaults to 250000 rows
 
+    Outputs
+    -------
+    complete_hourly_df : dataframe
+        a dataframe containing the filtered room's average occupancy count per hour
+        
+    
+    """
+    print(f"Starting processing for Room/Space: {target_floor_space}...")
+    
+    # Column definitions matching the source layout
+    columns = [
+        'sensor_id',
+        'floor_space_id',
+        'current_status',
+        'count',
+        'timestamp_record',
+        'timestamp_event',
+        'occupancy_label'
+    ]
+    
+    filtered_chunks = []
+    
+    # Step 1: Read chunk-by-chunk to save RAM and filter the target space
+    for chunk in pd.read_csv(input_csv, names=columns, header=0, chunksize=chunk_size, on_bad_lines='skip'):
+        # Filter for the specific room/space
+        subset = chunk[chunk['floor_space_id'] == target_floor_space].copy()
+        if not subset.empty:
+            # Keep only columns necessary for temporal aggregation
+            subset = subset[['timestamp_event', 'count']]
+            filtered_chunks.append(subset)
+            
+    if not filtered_chunks:
+        print(f"No records found for floor space ID: {target_floor_space}")
+        return None
+        
+    # Combine all filtered records
+    df_filtered = pd.concat(filtered_chunks, ignore_index=True)
+    print(f"Filtered {len(df_filtered)} records for target space.")
+    
+    # Step 2: Convert timestamps and extract temporal grouping targets
+    df_filtered['timestamp_event'] = pd.to_datetime(df_filtered['timestamp_event'], errors='coerce')
+    df_filtered = df_filtered.dropna(subset=['timestamp_event'])
+    
+    df_filtered['date'] = df_filtered['timestamp_event'].dt.date
+    df_filtered['hour'] = df_filtered['timestamp_event'].dt.hour
+    df_filtered['day_of_week'] = df_filtered['timestamp_event'].dt.day_name()
+    
+    # Step 3: Compute average occupancy grouped by calendar date and hour
+    hourly_avg = df_filtered.groupby(['date', 'day_of_week', 'hour'])['count'].mean().reset_index()
+    hourly_avg.rename(columns={'count': 'average_occupancy_count'}, inplace=True)
+    
+    # Step 4: Reconstruct a complete date-hour grid to fill in missing timeline hours with 0s
+    unique_dates = hourly_avg['date'].unique()
+    hours_grid = list(range(24))
+    
+    grid = pd.MultiIndex.from_product(
+        [unique_dates, hours_grid],
+        names=['date', 'hour']
+    ).to_frame().reset_index(drop=True)
+    
+    grid['day_of_week'] = pd.to_datetime(grid['date']).dt.day_name()
+    
+    # Merge grid with the calculated averages and fill missing values with 0
+    complete_hourly_df = pd.merge(grid, hourly_avg, on=['date', 'hour', 'day_of_week'], how='left')
+    complete_hourly_df['average_occupancy_count'] = complete_hourly_df['average_occupancy_count'].fillna(0.0)
+    
+    # Sort chronologically
+    complete_hourly_df = complete_hourly_df.sort_values(by=['date', 'hour']).reset_index(drop=True)
+    
+    # Save output to file
+    complete_hourly_df.to_csv(output_csv, index=False)
+    print(f"Success! Chronological hourly average dataset saved to: {output_csv}")
+    return complete_hourly_df
 
-
-# Load the 2-week subset
-two_week_file = '/content/occupancy_first_2_weeks_cca1ac3e.csv'
-df_2w = pd.read_csv(two_week_file)
-
-# Ensure the timestamp is in datetime format
-df_2w['timestamp_event'] = pd.to_datetime(df_2w['timestamp_event'])
-
-# Extract the actual calendar date (YYYY-MM-DD)
-df_2w['date'] = df_2w['timestamp_event'].dt.date
-
-# Group by the specific date, day of week, and hour, then calculate average occupancy count
-hourly_daily_specific_avg = df_2w.groupby(['date', 'day_of_week', 'hour'])['count'].mean().reset_index()
-
-# Sort chronologically by date and hour
-hourly_daily_specific_avg = hourly_daily_specific_avg.sort_values(by=['date', 'hour'])
-
-# Rename columns for clarity
-hourly_daily_specific_avg.rename(columns={
-    'count': 'average_occupancy_count'
-}, inplace=True)
-
-# Save this specific daily breakdown to a CSV dataset
-specific_summary_path = '/content/hourly_avg_per_specific_day.csv'
-hourly_daily_specific_avg.to_csv(specific_summary_path, index=False)
-print(f"Successfully saved specific daily-hourly averages dataset to: {specific_summary_path}")
-
-
+# --- Demo Execution of the function ---
+# Unhashtag to run
+# raw_input_path = '/content/5occupancySensor_MayToDec2024_9MRows.csv'
+# output_summary_path = '/content/hourly_avg_room_G20.csv'
+# target_space = 'cca1ac3e-f81f-4ebb-aa2b-8b0bf3e9e53b' # Building 60 - G20
